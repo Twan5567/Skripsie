@@ -1,12 +1,6 @@
 """Top-down render of a COLMAP sparse model, projected onto its floor plane.
 
-Two jobs. First, a sanity check you can read at a glance: if the track outline
-and a closed camera path are visible, the reconstruction worked. Second, it is
-a preview of the boundary-extraction stage — the RANSAC plane fit here is the
-same one that pipeline needs, so the inlier fraction and the height spread tell
-you in advance whether floor and barriers separate cleanly.
-
-Axes are in SfM units, not metres; metric scale comes later from the ArUco GCPs.
+   Still need to be implimented properly. Orientation of the plotting is wrong need to find way to rotate it to be correct. 
 
   python plot_topdown.py --sparse colmap/<stem>/sparse/0 --out out.png
 """

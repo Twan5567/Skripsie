@@ -2,10 +2,6 @@ import argparse
 import subprocess
 from pathlib import Path
 
-
-
-
-
 def extract_video(video_path: Path, out_root: Path, fps: int) -> Path:
     out_dir = out_root / video_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -14,8 +10,6 @@ def extract_video(video_path: Path, out_root: Path, fps: int) -> Path:
     subprocess.run(cmd, check=True)
 
     return out_dir
-
-
 
 def main() -> None:
     ap = argparse.ArgumentParser()

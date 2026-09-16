@@ -1,22 +1,7 @@
 """Vehicle trajectory from a fixed overhead camera, via a floor-GCP homography.
 
-Differs from main.py in where the metric scale comes from. main.py rectifies
-using the four corners of the marker it is tracking, which is exact only when
-that marker slides in its own plane — true for a marker taped to a sliding
-block, false for one bolted to a car. Here the homography is built from the
-ArUco sheets lying flat ON THE FLOOR, so the rectified plane is the plane the
-car actually drives in, and the tracked marker is free to sit above it.
-
-Two sources feed the trajectory:
-  * the vehicle ArUco marker, where it is detected — metric and unambiguous,
-    but on the September capture it only fires in 1-14% of frames;
-  * background subtraction against a median background, which is continuous
-    but only gives the car's silhouette centroid.
-The CSV keeps them in separate columns and records which produced each row,
-so the sparse-but-trusted series is never silently blended into the dense one.
-
 Run:
-  python track_ground.py --video /path/to/clip.MP4   (or use ../run_tracking.sh)
+  python track_ground.py --video /path/to/clip.MP4   (or use ./run_tracking.sh)
 """
 from gpu import init_opencv_opencl
 
@@ -508,6 +493,7 @@ net = float(np.linalg.norm(mm[have][-1] - mm[have][0]))
 
 # --- CSV ------------------------------------------------------------------
 csv_path = os.path.join(args.outdir, f"{stem}_trajectory.csv")
+
 with open(csv_path, "w", newline="") as fh:
     w = csv.writer(fh)
     w.writerow(["frame", "time_s", "source", "px_x", "px_y", "mm_x", "mm_y",
@@ -524,60 +510,63 @@ with open(csv_path, "w", newline="") as fh:
                     f"{a[1]:.2f}" if np.isfinite(a).all() else ""])
 print(f"\n  wrote {csv_path}")
 
-# --- plots ----------------------------------------------------------------
-import matplotlib
+# # --- plots ----------------------------------------------------------------
+# import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+# matplotlib.use("Agg")
+# import matplotlib.pyplot as plt
 
-t = np.arange(n) * args.stride / fps
-is_ar = np.array([s.startswith("aruco") for s in veh_src]) & have
+# t = np.arange(n) * args.stride / fps
 
-fig, ax = plt.subplots(figsize=(9.5, 7))
-for k in sorted(static):
-    q = apply_H(H, med[k])
-    ax.add_patch(plt.Polygon(q, closed=True, fc="0.85", ec="0.45", lw=0.8, zorder=1))
-    ax.text(*q.mean(axis=0), str(k), ha="center", va="center",
-            fontsize=7, color="0.3", zorder=2)
-if args.smooth >= 5:
-    ax.plot(mm_raw[have, 0], mm_raw[have, 1], "-", lw=0.7, color="#9BB7BF",
-            label="raw", zorder=2.5)
-ax.plot(mm[have, 0], mm[have, 1], "-", lw=1.6, color="#0A6273",
-        label=f"smoothed (w={args.smooth})" if args.smooth >= 5
-        else f"trajectory ({int(have.sum())} pts)", zorder=3)
-if is_ar.any():
-    ax.plot(mm[is_ar, 0], mm[is_ar, 1], "o", ms=4, color="#B3400C",
-            label=f"vehicle ArUco fix ({int(is_ar.sum())})", zorder=4)
-ax.plot(*mm[have][0], "go", ms=9, label="start", zorder=5)
-ax.plot(*mm[have][-1], "rs", ms=9, label="end", zorder=5)
-ax.set_aspect("equal")
-ax.set_xlabel("x (mm)")
-ax.set_ylabel("y (mm)")
-ax.set_title(f"{stem} — vehicle trajectory, floor-plane coordinates")
-ax.grid(alpha=0.3)
-ax.legend(loc="best", fontsize=8)
-p1 = os.path.join(args.outdir, f"{stem}_trajectory.png")
-fig.tight_layout()
-fig.savefig(p1, dpi=150)
-plt.close(fig)
+# is_ar = np.array([s.startswith("aruco") for s in veh_src]) & have
 
-dist = np.full(n, np.nan)
-dist[have] = np.linalg.norm(mm[have] - mm[have][0], axis=1)
-fig, ax = plt.subplots(figsize=(9.5, 4.5))
-ax.plot(t[have], dist[have], "-", lw=1.3, color="#0A6273")
-if is_ar.any():
-    ax.plot(t[is_ar], dist[is_ar], "o", ms=3.5, color="#B3400C",
-            label="vehicle ArUco fix")
-    ax.legend(fontsize=8)
-ax.set_xlabel("time (s)")
-ax.set_ylabel("distance from start (mm)")
-ax.set_title(f"{stem} — displacement over time")
-ax.grid(alpha=0.3)
-p2 = os.path.join(args.outdir, f"{stem}_distance.png")
-fig.tight_layout()
-fig.savefig(p2, dpi=150)
-plt.close(fig)
-print(f"  wrote {p1}\n  wrote {p2}")
+
+# fig, ax = plt.subplots(figsize=(9.5, 7))
+
+# for k in sorted(static):
+#     q = apply_H(H, med[k])
+#     ax.add_patch(plt.Polygon(q, closed=True, fc="0.85", ec="0.45", lw=0.8, zorder=1))
+#     ax.text(*q.mean(axis=0), str(k), ha="center", va="center",
+#             fontsize=7, color="0.3", zorder=2)
+# if args.smooth >= 5:
+#     ax.plot(mm_raw[have, 0], mm_raw[have, 1], "-", lw=0.7, color="#9BB7BF",
+#             label="raw", zorder=2.5)
+# ax.plot(mm[have, 0], mm[have, 1], "-", lw=1.6, color="#0A6273",
+#         label=f"smoothed (w={args.smooth})" if args.smooth >= 5
+#         else f"trajectory ({int(have.sum())} pts)", zorder=3)
+# if is_ar.any():
+#     ax.plot(mm[is_ar, 0], mm[is_ar, 1], "o", ms=4, color="#B3400C",
+#             label=f"vehicle ArUco fix ({int(is_ar.sum())})", zorder=4)
+# ax.plot(*mm[have][0], "go", ms=9, label="start", zorder=5)
+# ax.plot(*mm[have][-1], "rs", ms=9, label="end", zorder=5)
+# ax.set_aspect("equal")
+# ax.set_xlabel("x (mm)")
+# ax.set_ylabel("y (mm)")
+# ax.set_title(f"{stem} — vehicle trajectory, floor-plane coordinates")
+# ax.grid(alpha=0.3)
+# ax.legend(loc="best", fontsize=8)
+# p1 = os.path.join(args.outdir, f"{stem}_trajectory.png")
+# fig.tight_layout()
+# fig.savefig(p1, dpi=150)
+# plt.close(fig)
+
+# dist = np.full(n, np.nan)
+# dist[have] = np.linalg.norm(mm[have] - mm[have][0], axis=1)
+# fig, ax = plt.subplots(figsize=(9.5, 4.5))
+# ax.plot(t[have], dist[have], "-", lw=1.3, color="#0A6273")
+# if is_ar.any():
+#     ax.plot(t[is_ar], dist[is_ar], "o", ms=3.5, color="#B3400C",
+#             label="vehicle ArUco fix")
+#     ax.legend(fontsize=8)
+# ax.set_xlabel("time (s)")
+# ax.set_ylabel("distance from start (mm)")
+# ax.set_title(f"{stem} — displacement over time")
+# ax.grid(alpha=0.3)
+# p2 = os.path.join(args.outdir, f"{stem}_distance.png")
+# fig.tight_layout()
+# fig.savefig(p2, dpi=150)
+# plt.close(fig)
+# print(f"  wrote {p1}\n  wrote {p2}")
 
 # --- overlay --------------------------------------------------------------
 if not args.no_overlay:
