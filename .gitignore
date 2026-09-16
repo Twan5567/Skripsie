@@ -1,16 +1,22 @@
-# run artefacts — never commit footage, frames, models or clouds
-output/
-frames/
-colmap/
-capture/
+# capture/ holds the footage, output/ the results — both folders are tracked,
+# their contents are not
+capture/*
+!capture/.gitkeep
+output/*
+!output/.gitkeep
+
+# anything a run can produce, wherever it lands
 *.MP4
 *.mp4
+*.MOV
+*.mov
 *.ply
 *.png
 *.jpg
 *.log
 *.console
 *.db
+*_work/
 
 # python
 __pycache__/

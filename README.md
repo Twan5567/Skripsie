@@ -21,8 +21,17 @@ src/vehicle.py        ArUco vehicle fixes + parallax, blob fallback, combine + s
 src/outputs.py        CSV, plots (currently disabled), overlay video, summary
 ```
 
-Everything a run produces (`output/`, `frames/`, `colmap/`, clouds, logs) is
-git-ignored. Clone, install, point a runner at a clip.
+Each pipeline has the same two folders:
+
+```
+capture/    put your videos here — any number of them
+output/     one folder per video, named after it, with everything the run produced
+```
+
+You run a pipeline by **video name**, not by path. Frames and other
+intermediates are created under `capture/` while a run is going and are
+**deleted when it finishes**, so `capture/` only ever holds the videos.
+Both folders are tracked in git; their contents are not.
 
 ---
 
@@ -83,12 +92,13 @@ Fixed camera, roughly 3 m above the floor, looking down at the track.
 
 ```bash
 cd pipeline_A_tracking
-./run_tracking.sh /path/to/clip.MP4
-./run_tracking.sh /path/to/folder/            # every .MP4 in it
-./run_tracking.sh clip.MP4 -- --cam-height-mm 3271 --tag-heights 20:57
+cp /wherever/Mono1_4k.MP4 capture/
+./run_tracking.sh Mono1_4k                   # one video, by name (extension optional)
+./run_tracking.sh                            # every video in capture/
+./run_tracking.sh Mono1_4k -- --cam-height-mm 3271 --tag-heights 20:57
 ```
 
-Output in `output/<clip-stem>/`:
+Output in `output/<video-name>/`:
 
 | file | what |
 |---|---|
@@ -96,6 +106,9 @@ Output in `output/<clip-stem>/`:
 | `<stem>_trajectory.png` | top-down plot in floor-plane mm, GCP squares drawn |
 | `<stem>_distance.png` | displacement vs time |
 | `<stem>_trajectory.csv` | per analysed frame: `frame, time_s, source, px_x, px_y, mm_x, mm_y, aruco_px_x, aruco_px_y` |
+| `<stem>.log` | everything the script printed |
+
+(The two PNG plots are currently disabled in `outputs.py` pending a rework.)
 
 **What it does.** Detects every ArUco marker per frame; identifies the
 static floor GCPs; builds the ground-plane homography from the 150 mm
@@ -144,33 +157,40 @@ barriers. One or more clips of the same scene go into **one** model.
 
 ```bash
 cd pipeline_B_mapping
+cp /wherever/GX011488.MP4 /wherever/GX011489.MP4 capture/
 
-# recommended: sparse first, look at the component count, then dense
-SPARSE_ONLY=1 ./run_mapping.sh TrackMap walk1.MP4 walk2.MP4
-grep "components:" run_mapping.log
-./run_mapping.sh TrackMap walk1.MP4 walk2.MP4      # sparse is skipped, dense runs
+./run_mapping.sh GX011488                    # one clip            -> output/GX011488/
+./run_mapping.sh GX011488 GX011489           # two walks, ONE model -> output/GX011488_GX011489/
+NAME=TrackMap ./run_mapping.sh GX011488 GX011489      # pick the model name yourself
 
-# if it came out fragmented (components > 1): match every pair
-EXHAUSTIVE=1 SPARSE_ONLY=1 ./run_mapping.sh TrackMap walk1.MP4 walk2.MP4
+# recommended on a new scene: sparse first, read the component count, then dense
+SPARSE_ONLY=1 ./run_mapping.sh GX011488 GX011489
+grep "components:" output/GX011488_GX011489/GX011488_GX011489.log
+./run_dense.sh GX011488_GX011489             # sparse is kept in output/, only dense runs
 
-# dense only, on an existing model
-./run_dense.sh TrackMap
+# fragmented (components > 1)?  redo the sparse matching every pair
+EXHAUSTIVE=1 FORCE=1 ./run_mapping.sh GX011488 GX011489
 
-# optional Gaussian splat (AMD ROCm OpenSplat image); downscale 3 for ~600 4K frames
-./run_splat.sh TrackMap 3
+# optional Gaussian splat (AMD ROCm OpenSplat image); -d 3 for ~600 4K frames
+./run_splat.sh GX011488_GX011489 3
 ```
 
-Output in `output/<name>/`:
+Output in `output/<NAME>/`:
 
 | file | what |
 |---|---|
-| `<name>_topdown.png` | sparse cloud + camera path on the RANSAC floor plane, with registration stats in the title |
-| `<name>_sparse.ply` | sparse cloud, largest component |
-| `<name>_dense.ply` | OpenMVS dense cloud. Open in CloudCompare, set Colors → RGB |
+| `<NAME>_topdown.png` | sparse cloud + camera path on the RANSAC floor plane, with registration stats in the title |
+| `<NAME>_sparse.ply` | sparse cloud, largest component |
+| `<NAME>_dense.ply` | OpenMVS dense cloud. Open in CloudCompare, set Colors → RGB |
+| `sparse/` | the COLMAP model itself (`cameras/images/points3D.bin`) — what `run_dense.sh`, `run_splat.sh` and any later metric scaling read |
+| `sources.txt` | which clips built this model |
+| `<NAME>.log` | everything every tool printed |
 
-Intermediates: `frames/<name>/` (4 fps PNGs, hard-linked from
-`frames/_clips/<clip>/`), `colmap/<name>/{database.db, sparse/N/, dense/}`.
-Everything is appended to `run_mapping.log`.
+Frames and the COLMAP database live in `capture/<NAME>_work/` only while a
+run is going, and are **deleted when it completes** (kept only if it fails,
+so you can look). `run_dense.sh` and `run_splat.sh` re-extract the frames
+from `sources.txt` — about 15 s for a 4K clip — and delete them again.
+Consequence: an `EXHAUSTIVE=1` re-match redoes feature extraction too.
 
 **Stages.** `extract_frames.py` (ffmpeg, 4 fps) → `colmap_pipeline.py`
 (SIFT → sequential or exhaustive matcher → incremental mapper) → pick the

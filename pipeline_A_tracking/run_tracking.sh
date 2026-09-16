@@ -1,36 +1,33 @@
 #!/usr/bin/env bash
 # Pipeline A — vehicle trajectory tracking from a fixed overhead camera.
 #
-#   ./run_tracking.sh <clip.MP4> [more clips or a directory of clips] [-- extra track_ground.py args]
+#   ./run_tracking.sh                          # every video in capture/
+#   ./run_tracking.sh Mono1_4k                 # one, by name (extension optional)
+#   ./run_tracking.sh Mono1_4k Mono2_4k -- --cam-height-mm 3005 --tag-heights 20:80
 #
-#   ./run_tracking.sh ~/footage/Mono1_4k.MP4
-#   ./run_tracking.sh ~/footage/                       # every *.MP4 / *.mp4 in the folder
-#   ./run_tracking.sh clip.MP4 -- --cam-height-mm 3005 --tag-heights 20:80
-#
-# Output per clip, in output/<clip-stem>/:
-#   <stem>_trajectory.csv    frame, time_s, source, px_x/y (smoothed, merged),
+# Videos go in capture/. Output goes to output/<video-name>/:
+#   <name>_trajectory.csv    frame, time_s, source, px_x/y (smoothed, merged),
 #                            mm_x/y (floor plane), aruco_px_x/y (raw detection)
-#   <stem>_trajectory.png    top-down floor-plane plot with the GCP squares drawn
-#   <stem>_distance.png      displacement over time
-#   <stem>_overlay.mp4       the clip with the tracked path drawn — look at this first
+#   <name>_trajectory.png    top-down floor-plane plot   (plots currently disabled)
+#   <name>_distance.png      displacement over time     (plots currently disabled)
+#   <name>_overlay.mp4       the clip with the tracked path drawn — look at this first
+#   <name>.log               everything the script printed
+# Nothing is written into capture/; this pipeline reads the video directly.
 #
 # Defaults baked in here (override after "--"):
 #   --stride 2        analyse every 2nd frame (30 Hz effective at 59.94 fps)
 #   --smooth 15       Savitzky-Golay window in analysed frames
-#   --no-fallback     ArUco fixes only. The median-background blob fallback is
-#                     OFF because, with a properly mounted 150 mm vehicle tag,
-#                     detection runs at 83-91% and the fallback is no longer
-#                     needed — and a bad blob fill CORRUPTS the ~7 ArUco frames
-#                     either side of it through the smoothing window. Only turn
-#                     it back on (pass --fallback) for clips with long genuine
-#                     dropouts, and check px_x vs aruco_px_x in the CSV afterwards.
+#   --no-fallback     ArUco fixes only. The blob fallback is OFF because with a
+#                     properly mounted 150 mm tag detection runs at 83-91% and a
+#                     bad blob fill CORRUPTS the ~7 ArUco frames either side of it
+#                     through the smoothing window. Pass --fallback to re-enable
+#                     it for a clip with long genuine dropouts.
 #
-# --cam-height-mm is optional. The script recovers the camera height from the
-# floor GCPs on its own; passing the tape-measured value only makes it print the
-# comparison. Do not pass a guess — the printed "error" is then meaningless.
+# --cam-height-mm is optional: the script recovers the height from the floor GCPs
+# itself; the flag only makes it print the comparison. Do not pass a guess.
 set -u
-
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+CAPTURE="$ROOT/capture"; OUTPUT="$ROOT/output"
 PY="${PYTHON:-}"
 if [ -z "$PY" ]; then
   for c in "$ROOT/../.venv/bin/python" "$ROOT/../../.venv/bin/python"; do
@@ -39,29 +36,39 @@ if [ -z "$PY" ]; then
   PY="${PY:-python3}"
 fi
 
-clips=(); extra=(); fallback=0
+names=(); extra=(); fallback=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; extra=("$@"); break ;;
     --fallback) fallback=1 ;;
-    *) if [ -d "$1" ]; then
-         while IFS= read -r -d '' f; do clips+=("$f"); done < <(find "$1" -maxdepth 1 -type f \( -iname '*.mp4' \) -print0 | sort -z)
-       else
-         clips+=("$1")
-       fi ;;
+    *) names+=("$1") ;;
   esac
   shift
 done
-[ ${#clips[@]} -gt 0 ] || { sed -n '2,12p' "$0"; exit 1; }
+clips=()
+if [ ${#names[@]} -eq 0 ]; then
+  while IFS= read -r -d '' f; do clips+=("$f"); done \
+    < <(find "$CAPTURE" -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mov' \) -print0 | sort -z)
+  [ ${#clips[@]} -gt 0 ] || { echo "no videos in $CAPTURE"; exit 1; }
+else
+  for n in "${names[@]}"; do
+    base="$(basename "${n%.*}")"; found=""
+    for cand in "$CAPTURE/$base.MP4" "$CAPTURE/$base.mp4" "$CAPTURE/$base.MOV" "$CAPTURE/$base.mov"; do
+      [ -f "$cand" ] && { found="$cand"; break; }
+    done
+    [ -n "$found" ] || { echo "no clip named '$base' in $CAPTURE"; exit 1; }
+    clips+=("$found")
+  done
+fi
 
 nofb=(--no-fallback); [ "$fallback" = 1 ] && nofb=()
-mkdir -p "$ROOT/output"
 cd "$ROOT/src"
 for clip in "${clips[@]}"; do
-  [ -f "$clip" ] || { echo "no such file: $clip"; continue; }
   stem="$(basename "${clip%.*}")"
-  echo "############ $stem  $(date +%H:%M:%S) ############"
-  "$PY" track_ground.py --video "$clip" --outdir "$ROOT/output" \
-      --stride 2 --smooth 15 "${nofb[@]}" "${extra[@]}"
-  echo "############ $stem done rc=$? -> $ROOT/output/$stem ############"
+  mkdir -p "$OUTPUT/$stem"
+  echo "############ $stem  $(date +%H:%M:%S) ############" | tee "$OUTPUT/$stem/$stem.log"
+  "$PY" track_ground.py --video "$clip" --outdir "$OUTPUT" \
+      --stride 2 --smooth 15 "${nofb[@]}" "${extra[@]}" 2>&1 | tee -a "$OUTPUT/$stem/$stem.log"
+  rc=${PIPESTATUS[0]}
+  echo "############ $stem done rc=$rc -> $OUTPUT/$stem ############" | tee -a "$OUTPUT/$stem/$stem.log"
 done
