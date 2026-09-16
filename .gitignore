@@ -1,0 +1,18 @@
+# run artefacts — never commit footage, frames, models or clouds
+output/
+frames/
+colmap/
+capture/
+*.MP4
+*.mp4
+*.ply
+*.png
+*.jpg
+*.log
+*.console
+*.db
+
+# python
+__pycache__/
+*.pyc
+.venv/
