@@ -10,6 +10,17 @@ pipeline_A_tracking/    fixed overhead camera  ->  vehicle trajectory (mm, floor
 pipeline_B_mapping/     handheld walk-around   ->  COLMAP sparse + OpenMVS dense cloud
 ```
 
+Pipeline A's source is split by stage:
+
+```
+src/track_ground.py   command line + order of operations only
+src/detector.py       tuned ArUco detector, ID parsing, pass 1 over the video
+src/geometry.py       undistortion, square-error metric, camera-from-homography
+src/floor.py          static-GCP selection, distortion fit, homography, camera pose
+src/vehicle.py        ArUco vehicle fixes + parallax, blob fallback, combine + smooth
+src/outputs.py        CSV, plots (currently disabled), overlay video, summary
+```
+
 Everything a run produces (`output/`, `frames/`, `colmap/`, clouds, logs) is
 git-ignored. Clone, install, point a runner at a clip.
 
