@@ -1,0 +1,17 @@
+marker_id,role,nominal_side_mm,measured_side_mm,x_m,y_m,z_m,meas_method,use_as,notes
+0,gcp,,,,,,laser,fit,
+1,gcp,,,,,,laser,fit,
+2,gcp,,,,,,laser,fit,
+3,gcp,,,,,,laser,fit,
+4,gcp,,,,,,laser,fit,
+5,gcp,,,,,,laser,fit,
+6,gcp,,,,,,laser,fit,
+7,gcp,,,,,,laser,fit,
+8,gcp,,,,,,laser,fit,
+9,gcp,,,,,,laser,fit,
+10,gcp,,,,,,laser,fit,
+11,gcp,,,,,,laser,fit,
+30,scalebar,,,,,,laser,check,
+31,scalebar,,,,,,laser,check,
+20,vehicle,,,,,,,exclude,mounted on car - not a GCP
+21,vehicle,,,,,,,exclude,mounted on car - not a GCP

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pipeline B — track mapping: capture/<video> -> frames -> COLMAP sparse -> OpenMVS dense.
+# Pipeline A — track mapping: capture/<video> -> frames -> COLMAP sparse -> OpenMVS dense.
 #
 #   ./run_mapping.sh <video-name> [<video-name> ...]
 #
@@ -10,6 +10,8 @@
 #   SPARSE_ONLY=1 ./run_mapping.sh GX011488   # stop after sparse; run again (or run_dense.sh) for dense
 #   EXHAUSTIVE=1  ./run_mapping.sh GX011488   # match every pair — for a model that fragmented
 #   FORCE=1       ./run_mapping.sh GX011488   # redo sparse even if output/<NAME>/sparse exists
+#   START_S=10    ./run_mapping.sh GX011488   # skip the first 10 s of each clip (kept in
+#                                             # output/<NAME>/start_s.txt for the later steps)
 #
 # Videos go in capture/. Name them, do not path them. The extension is optional.
 #
@@ -52,6 +54,7 @@ CAP=(); command -v systemd-run >/dev/null && CAP=(systemd-run --user --scope -p 
 say "================ $NAME ================"
 say "clips: ${CLIPS[*]}"
 write_sources "${CLIPS[@]}"
+[ -n "${START_S:-}" ] && echo "$START_S" > "$OUT/start_s.txt"
 ensure_frames "${CLIPS[@]}" || exit 1
 
 # ---- sparse ----

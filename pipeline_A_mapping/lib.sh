@@ -1,4 +1,4 @@
-# Shared helpers for run_mapping.sh / run_dense.sh / run_splat.sh.  Source, don't run.
+# Shared helpers for run_mapping.sh / run_dense.sh / run_boundary.sh.  Source, don't run.
 #
 # Layout (all relative to this folder):
 #   capture/<video>.MP4        put footage here; any number of clips
@@ -64,11 +64,16 @@ ensure_frames() {
     say "frames present ($(ls -1 "$FRAMES" | wc -l))"; return 0
   fi
   mkdir -p "$FRAMES" "$WORK/clips"
+  # START_S: seconds skipped at the start of every clip. Saved with the model by
+  # run_mapping.sh (start_s.txt) so dense/boundary/splat rebuild the SAME frames.
+  local start="${START_S:-}"
+  [ -z "$start" ] && [ -f "$OUT/start_s.txt" ] && start="$(cat "$OUT/start_s.txt")"
+  start="${start:-0}"
   local i=0 clip cstem
   for clip in "$@"; do
     i=$((i+1)); cstem="$(basename "${clip%.*}")"
-    say "extracting $cstem @ ${FPS}fps"
-    "$PY" "$SRC/extract_frames.py" --video "$clip" --out-dir "$WORK/clips" --fps "$FPS" >>"$LOG" 2>&1 \
+    say "extracting $cstem @ ${FPS}fps from ${start}s"
+    "$PY" "$SRC/extract_frames.py" --video "$clip" --out-dir "$WORK/clips" --fps "$FPS" --start "$start" >>"$LOG" 2>&1 \
       || { say "FRAME EXTRACTION FAILED for $clip"; return 1; }
     # hard links (not symlinks: those do not resolve inside the OpenMVS container),
     # prefixed so the source clip stays visible in every filename

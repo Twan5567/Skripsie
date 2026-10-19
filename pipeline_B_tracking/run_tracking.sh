@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pipeline A — vehicle trajectory tracking from a fixed overhead camera.
+# Pipeline B — vehicle trajectory tracking from a fixed overhead camera.
 #
 #   ./run_tracking.sh                          # every video in capture/
 #   ./run_tracking.sh Mono1_4k                 # one, by name (extension optional)
@@ -17,11 +17,7 @@
 # Defaults baked in here (override after "--"):
 #   --stride 2        analyse every 2nd frame (30 Hz effective at 59.94 fps)
 #   --smooth 15       Savitzky-Golay window in analysed frames
-#   --no-fallback     ArUco fixes only. The blob fallback is OFF because with a
-#                     properly mounted 150 mm tag detection runs at 83-91% and a
-#                     bad blob fill CORRUPTS the ~7 ArUco frames either side of it
-#                     through the smoothing window. Pass --fallback to re-enable
-#                     it for a clip with long genuine dropouts.
+#   --tag-heights 20:198   session-4 tag, 198 mm above the floor; override after "--"
 #
 # --cam-height-mm is optional: the script recovers the height from the floor GCPs
 # itself; the flag only makes it print the comparison. Do not pass a guess.
@@ -36,11 +32,10 @@ if [ -z "$PY" ]; then
   PY="${PY:-python3}"
 fi
 
-names=(); extra=(); fallback=0
+names=(); extra=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; extra=("$@"); break ;;
-    --fallback) fallback=1 ;;
     *) names+=("$1") ;;
   esac
   shift
@@ -61,14 +56,13 @@ else
   done
 fi
 
-nofb=(--no-fallback); [ "$fallback" = 1 ] && nofb=()
 cd "$ROOT/src"
 for clip in "${clips[@]}"; do
   stem="$(basename "${clip%.*}")"
   mkdir -p "$OUTPUT/$stem"
   echo "############ $stem  $(date +%H:%M:%S) ############" | tee "$OUTPUT/$stem/$stem.log"
   "$PY" track_ground.py --video "$clip" --outdir "$OUTPUT" \
-      --stride 2 --smooth 15 "${nofb[@]}" "${extra[@]}" 2>&1 | tee -a "$OUTPUT/$stem/$stem.log"
+      --stride 2 --smooth 15 --tag-heights 20:198 "${extra[@]}" 2>&1 | tee -a "$OUTPUT/$stem/$stem.log"
   rc=${PIPESTATUS[0]}
   echo "############ $stem done rc=$rc -> $OUTPUT/$stem ############" | tee -a "$OUTPUT/$stem/$stem.log"
 done

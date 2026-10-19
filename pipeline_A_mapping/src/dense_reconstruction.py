@@ -1,28 +1,4 @@
-"""Dense reconstruction via OpenMVS (Docker), using COLMAP's sparse model as input.
-
-COLMAP's own dense reconstruction (patch_match_stereo) hard-requires CUDA, which
-isn't available on this AMD GPU (see README). OpenMVS does dense reconstruction
-on CPU instead, run here via the openmvs/openmvs-ubuntu Docker image.
-
-Pipeline:
-  1. colmap image_undistorter   — undistort images + sparse model to the PINHOLE
-     camera model (OpenMVS only supports PINHOLE).
-  2. colmap model_converter     — convert the undistorted sparse model to TXT
-     (InterfaceCOLMAP only reads COLMAP's TXT export).
-  3. InterfaceCOLMAP (Docker)   — convert COLMAP's TXT export into OpenMVS's
-     .mvs scene format.
-  4. DensifyPointCloud (Docker) — the actual CPU dense reconstruction stage,
-     producing scene_dense.mvs / scene_dense.ply.
-
-Every stage runs under a hard memory ceiling (systemd scope for the native
-colmap calls, Docker's --memory for the OpenMVS calls) so a runaway process
-gets killed on its own instead of triggering the system OOM killer against
-the whole desktop session — that's what crashed the machine (and separately,
-VS Code) last time. Run this from a plain terminal, not VS Code's integrated
-terminal: heavy commands launched there inherit VS Code's own snap memory
-cgroup, so a memory spike can take down VS Code itself, not just the command.
-
-Usage:
+"""
     python src/dense_reconstruction.py \
         --sparse colmap/sparse/0 --images frames/SangaCup --workspace colmap/dense/SangaCup \
         --memory-limit 8G --max-threads 4

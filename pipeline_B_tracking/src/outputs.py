@@ -1,4 +1,3 @@
-"""Outputs: trajectory CSV, plots, overlay video, and the summary print."""
 import csv
 import os
 
@@ -10,17 +9,20 @@ from geometry import apply_H
 from vehicle import Track
 
 
-def write_csv(path: str, track: Track, veh_px: np.ndarray, stride: int, fps: float) -> None:
+def write_csv(path: str, track: Track, veh_px: np.ndarray, stride: int, fps: float, t_global: np.ndarray | None = None) -> None:
+
     px, mm, have, veh_src = track.px, track.mm, track.have, track.veh_src
     n = len(px)
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["frame", "time_s", "source", "px_x", "px_y", "mm_x", "mm_y",
+        w.writerow(["frame", "time_s", "time_global_s", "source", "px_x", "px_y", "mm_x", "mm_y",
                     "aruco_px_x", "aruco_px_y"])
         for i in range(n):
             fr = i * stride
             a = veh_px[i]
-            w.writerow([fr, f"{fr / fps:.5f}", veh_src[i] or "",
+            w.writerow([fr, f"{fr / fps:.5f}",
+                        f"{t_global[i]:.3f}" if t_global is not None else "",
+                        veh_src[i] or "",
                         f"{px[i, 0]:.2f}" if have[i] else "",
                         f"{px[i, 1]:.2f}" if have[i] else "",
                         f"{mm[i, 0]:.2f}" if have[i] else "",
@@ -30,14 +32,8 @@ def write_csv(path: str, track: Track, veh_px: np.ndarray, stride: int, fps: flo
     print(f"\n  wrote {path}")
 
 
-def write_plots(outdir: str, stem: str, track: Track, floor: FloorFit,
-                stride: int, fps: float, smooth: int) -> None:
-    """Trajectory and displacement plots.
+def write_plots(outdir: str, stem: str, track: Track, floor: FloorFit, stride: int, fps: float, smooth: int) -> None:
 
-    Currently DISABLED (body commented out, as in the original script) pending
-    a rework. The aliases below map the original variable names onto the
-    Track/FloorFit fields so the block can be uncommented and run as written.
-    """
     mm, mm_raw, have, veh_src, dist = track.mm, track.mm_raw, track.have, track.veh_src, track.dist
     static, med, H = floor.static, floor.med, floor.H
     n = len(mm)
@@ -103,8 +99,7 @@ def write_plots(outdir: str, stem: str, track: Track, floor: FloorFit,
     # print(f"  wrote {p1}\n  wrote {p2}")
 
 
-def write_overlay(video: str, out_path: str, track: Track, floor: FloorFit,
-                  stride: int, fps: float, W: int, Hh: int, overlay_width: int) -> None:
+def write_overlay(video: str, out_path: str, track: Track, floor: FloorFit, stride: int, fps: float, W: int, Hh: int, overlay_width: int) -> None:
     px, have, veh_src, dist = track.px, track.have, track.veh_src, track.dist
     static, med = floor.static, floor.med
     n = len(px)
@@ -116,18 +111,23 @@ def write_overlay(video: str, out_path: str, track: Track, floor: FloorFit,
                              fps / stride, (ow, oh))
     cap = cv2.VideoCapture(video)
     fi = ki = 0
+
     while True:
         ok, fr = cap.read()
+
         if not ok or ki >= n:
             break
+
         if fi % stride == 0:
+
             fr = cv2.resize(fr, (ow, oh), interpolation=cv2.INTER_AREA)
+           
+            col = (0, 140, 255) if floor.cal else (140, 140, 140)
             for k in sorted(static):
-                cv2.polylines(fr, [(med[k] * sc).astype(np.int32)], True,
-                              (140, 140, 140), 2)
-                cv2.putText(fr, str(k), tuple((med[k][0] * sc).astype(int)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (140, 140, 140), 2,
-                            cv2.LINE_AA)
+                cv2.polylines(fr, [(med[k] * sc).astype(np.int32)], True, col, 2)
+                cv2.putText(fr, f"{k} cal" if floor.cal else str(k),
+                            tuple((med[k][0] * sc).astype(int)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
             trail = px[: ki + 1][have[: ki + 1]] * sc
             if len(trail) > 1:
                 cv2.polylines(fr, [trail.astype(np.int32)], False, (0, 255, 255), 3)
@@ -150,9 +150,7 @@ def write_overlay(video: str, out_path: str, track: Track, floor: FloorFit,
     print(f"  wrote {out_path}" + " " * 20)
 
 
-def print_summary(stem: str, W: int, Hh: int, fps: float, frame_i: int, n: int,
-                  stride: int, floor: FloorFit, track: Track, aruco_hits: int,
-                  smooth: int) -> None:
+def print_summary(stem: str, W: int, Hh: int, fps: float, frame_i: int, n: int, stride: int, floor: FloorFit, track: Track, aruco_hits: int, smooth: int) -> None:
     resid, S = floor.resid, floor.S
     print(f"\n{'=' * 66}")
     print(f"{stem}   {W}x{Hh} @ {fps:.2f} fps, {frame_i} frames "
@@ -160,7 +158,6 @@ def print_summary(stem: str, W: int, Hh: int, fps: float, frame_i: int, n: int,
     print("=" * 66)
     print(f"floor GCPs used     : {sorted(floor.static)}  (anchor {floor.anchor})")
     print(f"vehicle ArUco fixes : {aruco_hits}/{n} ({100 * aruco_hits / n:.1f}%)")
-    print(f"blob-filled frames  : {int(track.fill.sum())}/{n} ({100 * track.fill.sum() / n:.1f}%)")
     print(f"located total       : {int(track.have.sum())}/{n} ({100 * track.have.mean():.1f}%)")
     print(f"path length (raw)   : {track.raw_path:.0f} mm ({track.raw_path / 1000:.2f} m)  "
           f"[jitter-inflated]")
