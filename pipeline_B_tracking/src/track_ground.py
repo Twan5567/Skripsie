@@ -8,22 +8,23 @@ from gpu import init_opencv_opencl
 init_opencv_opencl()   # must run before anything imports cv2
 
 import argparse
+import json
 import os
 from dataclasses import dataclass
 
 import numpy as np
 
+from calcache import check_identity, clip_identity, floor_from_dict, load_cal, move_check, save_cal
 from detector import Detections, build_detector, detect_all_frames, parse_ids
 from floor import FloorFit, fit_floor
-from outputs import print_summary, write_csv, write_overlay, write_plots
+from outputs import print_summary, write_csv, write_overlay
 from timecode import clip_start_seconds, fmt_tod, frame_times
-from calcache import (check_identity, clip_identity, floor_from_dict, load_cal,
-                      move_check, save_cal)
+from util import banner
 from vehicle import Track, combine_and_smooth, locate_vehicle_aruco
 
 
+# options shared by the single-camera and two-camera runs
 def add_tracking_args(ap: argparse.ArgumentParser) -> None:
-
     ap.add_argument("--gcp-ids", default="0-11", help="IDs of the flat floor sheets")
     ap.add_argument("--gcp-mm", type=float, default=150.0,
                     help="black-square side of the floor sheets, mm")
@@ -62,10 +63,10 @@ def add_tracking_args(ap: argparse.ArgumentParser) -> None:
                          "calibration clip into the floor fit (default: report it only)")
     ap.add_argument("--no-overlay", action="store_true")
     ap.add_argument("--overlay-width", type=int, default=1920)
+    ap.set_defaults(allow_no_vehicle=False)
 
 
 def parse_args() -> argparse.Namespace:
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", required=True)
     ap.add_argument("--outdir", default="../output")
@@ -73,14 +74,14 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+# "20:198,21:150" -> {20: 198.0, 21: 150.0}
 def parse_tag_heights(spec: str) -> dict[int, float]:
-    return {int(a): float(b) for a, b in
-            (t.split(":") for t in spec.split(",") if t.strip())}
+    return {int(a): float(b) for a, b in (t.split(":") for t in spec.split(",") if t.strip())}
 
 
+# everything one camera's run produced, kept for the two-camera steps
 @dataclass
 class ClipResult:
-   
     stem: str
     video: str
     outdir: str
@@ -88,16 +89,33 @@ class ClipResult:
     det: Detections
     floor: FloorFit
     track: Track
-    veh_px: np.ndarray          
+    veh_px: np.ndarray
     aruco_hits: int
-    t_global: np.ndarray | None  
-    ident: dict | None = None    
+    t_global: np.ndarray | None
+    ident: dict | None = None
 
 
+def locate(det: Detections, floor: FloorFit, args: argparse.Namespace, announce: bool = True):
+    veh_px, veh_mm, veh_src, hits = locate_vehicle_aruco(
+        det.corners_by_frame, det.n, parse_ids(args.vehicle_ids), floor,
+        parse_tag_heights(args.tag_heights))
+    if args.start_s > 0:
+        early = np.arange(det.n) * args.stride / det.fps < args.start_s
+        veh_px[early] = veh_mm[early] = np.nan
+        veh_src[early] = ""
+        hits = int(np.isfinite(veh_px).all(axis=1).sum())
+        if announce:
+            print(f"  --start-s {args.start_s:g}: fixes in the first {int(early.sum())} "
+                  f"analysed frames discarded")
+    track = combine_and_smooth(veh_px, veh_mm, veh_src, args.smooth, allow_empty=args.allow_no_vehicle)
+    return veh_px, track, hits
+
+
+# One camera: detect the markers, get the floor fit (from this clip or from a
+# calibration), locate the car. track_dual.py passes write_outputs=False and writes
+# them after the cross-camera guide.
 def process_clip(video: str, outdir: str, args: argparse.Namespace, write_outputs: bool = True) -> ClipResult:
-
     stem = os.path.splitext(os.path.basename(video))[0]
-
     if args.save_cal and args.load_cal:
         raise SystemExit("--save-cal and --load-cal together: calibrate on one clip, load on others")
     if args.load_cal and args.lens:
@@ -105,15 +123,10 @@ def process_clip(video: str, outdir: str, args: argparse.Namespace, write_output
                          "it was fitted with")
     if args.correct_motion and not args.load_cal:
         raise SystemExit("--correct-motion only applies with --load-cal")
-    
-  
+
     outdir = os.path.join(outdir, stem)
     os.makedirs(outdir, exist_ok=True)
-    gcp_ids = set(parse_ids(args.gcp_ids))
     veh_ids = parse_ids(args.vehicle_ids)
-    tag_h = parse_tag_heights(args.tag_heights)
-
-    
     ident = clip_identity(video)
     cal = None
     if args.load_cal:
@@ -136,107 +149,65 @@ def process_clip(video: str, outdir: str, args: argparse.Namespace, write_output
     if args.load_cal:
         floor = floor_from_cal(cal, args, video, ident, outdir, stem)
     else:
-        floor = fit_floor_here(args, det, gcp_ids, veh_ids)
+        floor = fit_floor_here(args, det, set(parse_ids(args.gcp_ids)), veh_ids)
 
     # --- vehicle: ArUco fixes ------------------------------------------------
-    veh_px, veh_mm, veh_src, aruco_hits = locate_vehicle_aruco(
-        det.corners_by_frame, det.n, veh_ids, floor, tag_h)
-    if args.start_s > 0:
-    
-        early = np.arange(det.n) * args.stride / det.fps < args.start_s
-        veh_px[early] = np.nan
-        veh_mm[early] = np.nan
-        veh_src[early] = ""
-        aruco_hits = int(np.isfinite(veh_px).all(axis=1).sum())
-        print(f"  --start-s {args.start_s:g}: fixes in the first {int(early.sum())} "
-              f"analysed frames discarded")
-    track = combine_and_smooth(veh_px, veh_mm, veh_src, args.smooth,
-                               allow_empty=getattr(args, "allow_no_vehicle", False))
-
-    res = ClipResult(stem=stem, video=video, outdir=outdir, stride=args.stride,
-                     det=det, floor=floor, track=track,
-                     veh_px=veh_px, aruco_hits=aruco_hits, t_global=t_global, ident=ident)
+    veh_px, track, hits = locate(det, floor, args)
+    res = ClipResult(stem=stem, video=video, outdir=outdir, stride=args.stride, det=det, floor=floor,
+                     track=track, veh_px=veh_px, aruco_hits=hits, t_global=t_global, ident=ident)
     if write_outputs:
         write_clip_outputs(res, args)
     return res
 
 
-def floor_from_cal(cal: dict, args: argparse.Namespace, video: str, ident: dict, outdir: str, stem: str) -> FloorFit:
-    
-   
+# the floor fit from a saved calibration, after the camera-moved check
+def floor_from_cal(cal: dict, args: argparse.Namespace, video: str, ident: dict, outdir: str,
+                   stem: str) -> FloorFit:
     serial = ident["CASN"]
     c = cal["cameras"][serial]
     floor = floor_from_dict(c["floor"], cal["name"])
-    print(f"\n{'=' * 68}\nFLOOR PLANE FROM CALIBRATION   {cal['name']} "
-          f"(clip {c['clip']}, camera {serial})\n{'=' * 68}")
+    print(banner(f"FLOOR PLANE FROM CALIBRATION   {cal['name']} (clip {c['clip']}, camera {serial})"))
     print(f"sheets            : {sorted(floor.static)}  anchor {floor.anchor}, side rms "
           f"{np.sqrt((floor.resid ** 2).mean()):.2f} mm on the calibration clip")
-
     if floor.H_cam is not None:
         print(f"camera height     : {floor.H_cam:.0f} mm, focal {floor.f_px:.0f} px "
               f"(from the calibration clip)")
     return move_check(cal, serial, floor, video, outdir, stem, args.correct_motion)
 
 
+# the floor fit from this clip's own floor sheets, with an optional lens file
 def fit_floor_here(args: argparse.Namespace, det: Detections, gcp_ids: set, veh_ids: list) -> FloorFit:
-
-    
     lens = None
     if args.lens:
-
-        import json
-
         with open(args.lens) as fh:
             lens = json.load(fh)
-
         if lens.get("model") == "opencv":
             print(f"  lens: {args.lens} (ChArUco, camera {lens.get('camera')} "
                   f"{lens.get('lens_mode')}, {lens.get('views')} views, {lens.get('rms_px', 0):.2f} px)")
-            
         else:
             print(f"  lens: {args.lens} (camera {lens.get('camera')}, {lens.get('poses')} poses)")
-
-    return fit_floor(det.corners_by_frame, det.n, det.W, det.Hh,
-                     gcp_ids, veh_ids, args.min_rate, args.anchor_id,
-                     args.gcp_mm, args.no_distortion, args.cam_height_mm, lens)
+    return fit_floor(det.corners_by_frame, det.n, det.W, det.Hh, gcp_ids, veh_ids, args.min_rate,
+                     args.anchor_id, args.gcp_mm, args.no_distortion, args.cam_height_mm, lens)
 
 
 def relocate_vehicle(res: ClipResult, args: argparse.Namespace) -> None:
-
-    veh_ids = parse_ids(args.vehicle_ids)
-    tag_h = parse_tag_heights(args.tag_heights)
-    veh_px, veh_mm, veh_src, hits = locate_vehicle_aruco(
-        res.det.corners_by_frame, res.det.n, veh_ids, res.floor, tag_h)
-    
-    if args.start_s > 0:
-        early = np.arange(res.det.n) * args.stride / res.det.fps < args.start_s
-        veh_px[early] = np.nan
-        veh_mm[early] = np.nan
-        veh_src[early] = ""
-        hits = int(np.isfinite(veh_px).all(axis=1).sum())
-
-    res.track = combine_and_smooth(veh_px, veh_mm, veh_src, args.smooth,
-                                   allow_empty=getattr(args, "allow_no_vehicle", False))
-    res.veh_px, res.aruco_hits = veh_px, hits
+    # after the cross-camera guide added tag fixes
+    res.veh_px, res.track, res.aruco_hits = locate(res.det, res.floor, args, announce=False)
 
 
+# trajectory CSV, overlay video and summary for one camera
 def write_clip_outputs(res: ClipResult, args: argparse.Namespace) -> None:
-   
-    stem, outdir, det, floor, track = res.stem, res.outdir, res.det, res.floor, res.track
-
-    write_csv(os.path.join(outdir, f"{stem}_trajectory.csv"),
-              track, res.veh_px, args.stride, det.fps, res.t_global)
-    write_plots(outdir, stem, track, floor, args.stride, det.fps, args.smooth)
-
+    det = res.det
+    write_csv(os.path.join(res.outdir, f"{res.stem}_trajectory.csv"),
+              res.track, res.veh_px, args.stride, det.fps, res.t_global)
     if not args.no_overlay:
-        write_overlay(res.video, os.path.join(outdir, f"{stem}_overlay.mp4"),
-                      track, floor, args.stride, det.fps, det.W, det.Hh, args.overlay_width)
-    print_summary(stem, det.W, det.Hh, det.fps, det.frame_i, det.n, args.stride,
-                  floor, track, res.aruco_hits, args.smooth)
+        write_overlay(res.video, os.path.join(res.outdir, f"{res.stem}_overlay.mp4"), res.track,
+                      res.floor, args.stride, det.fps, det.W, det.Hh, args.overlay_width)
+    print_summary(res.stem, det.W, det.Hh, det.fps, det.frame_i, det.n, args.stride,
+                  res.floor, res.track, res.aruco_hits, args.smooth)
 
 
 def main() -> None:
-    
     args = parse_args()
     res = process_clip(args.video, args.outdir, args)
     if args.save_cal:

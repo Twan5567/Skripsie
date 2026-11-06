@@ -7,26 +7,29 @@ Calibrate, then lift (floor sheets down only for the calibration clips):
 """
 from gpu import init_opencv_opencl
 
-init_opencv_opencl()  
+init_opencv_opencl()
 
 import argparse
+import copy
 import os
+from pathlib import Path
 
 import numpy as np
 
+from calcache import load_cal, save_cal, world_from_cal
+from crossguide import guide
 from detector import parse_ids
 from dual_outputs import write_dual_overlay, write_fused_csv, write_topdown
 from fuse import fuse, print_fusion_summary, solve_tag_height
 from timecode import fmt_tod
-from crossguide import guide
-from track_ground import (add_tracking_args, parse_tag_heights, process_clip,
-                          relocate_vehicle, write_clip_outputs)
-from calcache import load_cal, save_cal, world_from_cal
+from track_ground import add_tracking_args, parse_tag_heights, process_clip, relocate_vehicle, write_clip_outputs
 from world import fit_world, fit_world_map, load_map_corners
+
+# where --map-anchor NAME finds pipeline A's <NAME>_metric.json
+MAPPING_OUTPUT = Path(__file__).resolve().parents[2] / "pipeline_A_mapping" / "output"
 
 
 def parse_args() -> argparse.Namespace:
-    
     ap = argparse.ArgumentParser()
     ap.add_argument("--video-a", required=True)
     ap.add_argument("--video-b", required=True)
@@ -62,27 +65,27 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def camera_args(args: argparse.Namespace, start_s: float, lens: str | None) -> argparse.Namespace:
+    # one camera's view of the shared options; a camera may not see the car at all
+    out = copy.copy(args)
+    out.start_s, out.lens, out.allow_no_vehicle = start_s, lens, True
+    return out
+
+
+# Two cameras: each clip on its own, one world frame, the cross-camera guide, the
+# tag-height check, fusion, outputs.
 def main() -> None:
-
     args = parse_args()
-    stem_a = os.path.splitext(os.path.basename(args.video_a))[0]
-    stem_b = os.path.splitext(os.path.basename(args.video_b))[0]
-
+    stem_a, stem_b = Path(args.video_a).stem, Path(args.video_b).stem
     name = args.name or f"{stem_a}_{stem_b}"
     outdir = os.path.join(args.outdir, name)
-
     os.makedirs(outdir, exist_ok=True)
     veh_ids = parse_ids(args.vehicle_ids)
-    tag_h = parse_tag_heights(args.tag_heights)
-    h_used = tag_h.get(veh_ids[0], 0.0)
+    h_used = parse_tag_heights(args.tag_heights).get(veh_ids[0], 0.0)
 
     # --- the two single-camera runs, each into its own subfolder ---------------
-    import copy
-    args_a, args_b = copy.copy(args), copy.copy(args)
-    args_a.start_s, args_b.start_s = args.start_a, args.start_b
-    args_a.lens, args_b.lens = args.lens_a, args.lens_b
-  
-    args_a.allow_no_vehicle = args_b.allow_no_vehicle = True
+    args_a = camera_args(args, args.start_a, args.lens_a)
+    args_b = camera_args(args, args.start_b, args.lens_b)
     print(f"\n######## camera A: {stem_a} ########")
     res_a = process_clip(args.video_a, outdir, args_a, write_outputs=False)
     print(f"\n######## camera B: {stem_b} ########")
@@ -91,20 +94,16 @@ def main() -> None:
         print(f"\nclip starts         : A {fmt_tod(res_a.t_global[0])}   "
               f"B {fmt_tod(res_b.t_global[0])}   "
               f"(B - A = {res_b.t_global[0] - res_a.t_global[0]:+.3f} s)")
-
     if not res_a.track.have.any() and not res_b.track.have.any():
         raise SystemExit("vehicle never located by either camera")
 
     # --- one world frame -------------------------------------------------------
     if args.load_cal:
-
         wf = world_from_cal(load_cal(args.load_cal), res_a.ident["CASN"], res_b.ident["CASN"])
     else:
         if args.map_anchor:
-            mpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
-                                 "pipeline_A_mapping", "output", args.map_anchor,
-                                 f"{args.map_anchor}_metric.json")
-            if not os.path.exists(mpath):
+            mpath = MAPPING_OUTPUT / args.map_anchor / f"{args.map_anchor}_metric.json"
+            if not mpath.exists():
                 raise SystemExit(f"--map-anchor {args.map_anchor}: no {mpath}")
             corners, args.world_origin, args.world_x = load_map_corners(mpath)
             wf = fit_world_map(res_a.floor, res_b.floor, corners, args.map_anchor)
@@ -116,12 +115,10 @@ def main() -> None:
                      map_anchor=args.map_anchor)
 
     # --- each camera looks where the other one saw the car --------------------
-
     if not args.no_cross_guide:
         print()
-        fa = res_a.aruco_hits
-        fb = res_b.aruco_hits
-        
+        fa, fb = res_a.aruco_hits, res_b.aruco_hits
+        # both searches use the tracks as they were before either camera gained fixes
         ga = guide(res_a, wf.a_to_world, res_b, wf.b_to_world, veh_ids, h_used, args.stride)
         gb = guide(res_b, wf.b_to_world, res_a, wf.a_to_world, veh_ids, h_used, args.stride)
         if ga:
@@ -129,7 +126,7 @@ def main() -> None:
         if gb:
             relocate_vehicle(res_b, args_b)
         print(f"vehicle fixes       : A {fa} -> {res_a.aruco_hits}   B {fb} -> {res_b.aruco_hits}")
-        
+
     print(f"\n######## outputs: {stem_a} ########")
     write_clip_outputs(res_a, args_a)
     print(f"\n######## outputs: {stem_b} ########")
@@ -143,8 +140,7 @@ def main() -> None:
     else:
         print(f"\ntag height solve    : {h_used:.0f} mm gives A-B rms {rms_used:.1f} mm; "
               f"best agreement at {h_best:.0f} mm (rms {rms_best:.1f} mm)"
-              + ("   <- applied" if args.solve_tag_height else
-                 "   (pass --solve-tag-height to use it)"))
+              + ("   <- applied" if args.solve_tag_height else "   (pass --solve-tag-height to use it)"))
     h_fuse = h_best if args.solve_tag_height and np.isfinite(rms_best) else h_used
 
     # --- fuse ----------------------------------------------------------------
@@ -159,8 +155,8 @@ def main() -> None:
                   f"{name} — fused trajectory, world frame "
                   f"(origin GCP {args.world_origin}, +x to GCP {args.world_x})")
     if not args.no_overlay:
-        write_dual_overlay(os.path.join(outdir, f"{name}_overlay.mp4"), f, res_a, res_b,
-                           wf, args.overlay_width)
+        write_dual_overlay(os.path.join(outdir, f"{name}_overlay.mp4"), f, res_a, res_b, wf,
+                           args.overlay_width)
 
 
 if __name__ == "__main__":

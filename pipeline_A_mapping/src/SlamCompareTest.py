@@ -8,14 +8,18 @@ import argparse
 import csv
 import json
 import os
+import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline_B_tracking" / "src"))
+from world import kabsch_2d  # noqa: E402
+
 
 def load_map(yaml_path: str, min_blob: int = 4) -> tuple[np.ndarray, dict]:
-    
     meta = {}
     with open(yaml_path) as fh:
         for ln in fh:
@@ -37,7 +41,6 @@ def load_map(yaml_path: str, min_blob: int = 4) -> tuple[np.ndarray, dict]:
 
 
 def load_boundary(path: str):
-    
     out = {}
     with open(path) as fh:
         for r in csv.DictReader(fh):
@@ -49,32 +52,18 @@ def load_boundary(path: str):
             for k, v in out.items() if k in ("outer", "inner")}
 
 
-def fit(src, dst, scale):
-
-    ms, md = src.mean(0), dst.mean(0)
-    P, Q = src - ms, dst - md
-    U, S, Vt = np.linalg.svd(P.T @ Q)
-    D = np.diag([1, np.sign(np.linalg.det(Vt.T @ U.T))])
-    R = Vt.T @ D @ U.T
-    s = (S * np.diag(D)).sum() / (P ** 2).sum() if scale else 1.0
-    return s, R, md - s * R @ ms
-
-
 def icp(src, tree, dst, R0, t0, scale, iters=60, trim=0.9):
-
     s, R, t = 1.0, R0, t0
     for _ in range(iters):
         cur = s * src @ R.T + t
         d, j = tree.query(cur)
         keep = d <= np.quantile(d, trim)
-        s, R, t = fit(src[keep], dst[j[keep]], scale)
+        s, R, t = kabsch_2d(src[keep], dst[j[keep]], scale)
     d, _ = tree.query(s * src @ R.T + t)
     return s, R, t, d
 
 
 def main():
-
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--boundary", required=True)
     ap.add_argument("--map", required=True)
@@ -94,7 +83,6 @@ def main():
     print(f"boundary {os.path.basename(args.boundary)}: " + ", ".join(
         f"{k} {m.sum()} measured + {(~m).sum()} bridged" for k, (p, m) in loops.items()))
 
-    
     best = None
     for mirror in (False, True):
         s0 = src * ([1, -1] if mirror else [1, 1])
@@ -118,7 +106,7 @@ def main():
 
     rep = {"boundary": args.boundary, "map": args.map, "map_meta": meta, "mirrored": bool(mirror),
            "rotation_deg": float(rot),
-           
+
            "transform": {"M": M.tolist(), "R": Rr.tolist(), "t": tr.tolist()},
            "rigid": stats(dr), "similarity": stats(ds),
            "similarity_scale": float(ss), "per_loop": {}}
@@ -171,9 +159,7 @@ def main():
 
 
 def write_dense_overlay(dense_dir, out, slam, M, R, t, res_m, loops):
-    
-    import sys
-    from pathlib import Path
+    # the dense cloud with the SLAM walls (magenta) and the boundary (red) in 3-D
     import open3d as o3d
     from matplotlib.path import Path as MPath
     from scipy.spatial import ConvexHull

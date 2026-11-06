@@ -340,6 +340,7 @@ src/outputs.py         single-camera CSV, overlay video, summary
 src/dual_outputs.py    fused CSV, top-down plot, side-by-side overlay
 src/gpu.py             OpenCL switch for OpenCV
 src/aruco_config.py    the ArUco dictionary
+src/util.py            section headers for the log, runs of consecutive samples
 ```
 
 `run_tracking.sh` runs `track_ground.py` on single clips (one camera only), into

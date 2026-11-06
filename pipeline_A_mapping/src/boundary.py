@@ -61,8 +61,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
+# the dense cloud and the camera centres in world mm, through metric_scale.py's
+# transform
 def load_metric(dense: str, sparse: str, metric: str):
-
     m = json.loads(Path(metric).read_text())
     R, t, s = np.array(m["R"]), np.array(m["t"]), m["scale_mm_per_unit"]
     pc = o3d.io.read_point_cloud(dense)
@@ -74,8 +75,8 @@ def load_metric(dense: str, sparse: str, metric: str):
 
 
 def fit_floor(P: np.ndarray, band_mm: float):
-
-   
+    # least-squares plane z = a x + b y + c through the near-floor points, refit once
+    # with half the band
     sel = np.abs(P[:, 2]) < band_mm
     for tol in (band_mm, band_mm / 2):
         A = np.c_[P[sel, 0], P[sel, 1], np.ones(sel.sum())]
@@ -86,8 +87,9 @@ def fit_floor(P: np.ndarray, band_mm: float):
     return coef, rms
 
 
+# a raster over the floor: idx() point -> (row, col), xy() cell -> its centre,
+# count() points per cell
 class Grid:
-
     def __init__(self, xy: np.ndarray, cell: float, pad: float):
         self.cell = cell
         self.x0, self.y0 = xy.min(axis=0) - pad
@@ -99,7 +101,7 @@ class Grid:
                 ((xy[:, 0] - self.x0) / self.cell).astype(int))
 
     def xy(self, rc):
-        
+        # cell centres of (row, col) indices
         rc = np.asarray(rc, float)
         return np.c_[self.x0 + (rc[:, 1] + 0.5) * self.cell, self.y0 + (rc[:, 0] + 0.5) * self.cell]
 
@@ -110,7 +112,19 @@ class Grid:
         return H
 
 
+def closed_and_filled(mask: np.ndarray, close_mm: float, cell: float):
+    ks = 2 * int(close_mm / cell / 2) + 1
+    mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks)))
+    cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    filled = np.zeros_like(mask)
+    cv2.drawContours(filled, cs, -1, 1, -1)
+    mask, filled = mask.astype(bool), filled.astype(bool)
+    return mask, filled, filled & ~mask
+
+
 def equidistant_contour(outer_mask: np.ndarray, inner_mask: np.ndarray, grid: Grid):
+    # the line midway between the inside of outer_mask and the outside of inner_mask
 
     d_out = cv2.distanceTransform(outer_mask.astype(np.uint8), cv2.DIST_L2, 5)
     d_in = cv2.distanceTransform((~inner_mask).astype(np.uint8), cv2.DIST_L2, 5)
@@ -120,28 +134,29 @@ def equidistant_contour(outer_mask: np.ndarray, inner_mask: np.ndarray, grid: Gr
     return grid.xy(np.c_[c[:, 1], c[:, 0]])
 
 
+# points every `step` mm along a closed polyline
 def resample(poly: np.ndarray, step: float) -> np.ndarray:
-
     p = np.vstack([poly, poly[:1]])
     d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))]
     s = np.arange(0, d[-1], step)
     return np.c_[np.interp(s, d, p[:, 0]), np.interp(s, d, p[:, 1])]
 
 
+# unit normal at each vertex of a closed polyline
 def normals(poly: np.ndarray) -> np.ndarray:
-
     tg = np.roll(poly, -1, 0) - np.roll(poly, 1, 0)
     tg /= np.linalg.norm(tg, axis=1, keepdims=True)
     return np.c_[-tg[:, 1], tg[:, 0]]
 
 
 def snap_to_wall(poly, pts, tree, half_width, reach):
-  
+    # move each vertex along its normal onto the median of the wall points in a strip
+    # half_width long and +-reach deep
     nrm = normals(poly)
     tg = np.c_[nrm[:, 1], -nrm[:, 0]]
     out = poly.copy()
-    for i, (p, n, t_) in enumerate(zip(poly, nrm, tg)):
-        idx = tree.query_ball_point(p, np.hypot(half_width, reach))
+    near = tree.query_ball_point(poly, np.hypot(half_width, reach))
+    for i, (p, n, t_, idx) in enumerate(zip(poly, nrm, tg, near)):
         if len(idx) < 5:
             continue
         d = pts[idx] - p
@@ -152,22 +167,22 @@ def snap_to_wall(poly, pts, tree, half_width, reach):
     return out
 
 
+# closed smoothing spline through the polyline, sampled every `step` mm; smooth_mm =
+# the RMS deviation it may have from the points
 def smooth_closed(poly: np.ndarray, step: float, smooth_mm: float) -> np.ndarray:
-
     p = resample(poly, step)
     tck, _ = splprep([p[:, 0], p[:, 1]], s=len(p) * smooth_mm ** 2, per=True)
-    L = np.sum(np.linalg.norm(np.diff(np.vstack([p, p[:1]]), axis=0), axis=1))
-    u = np.linspace(0, 1, int(L / step), endpoint=False)
+    u = np.linspace(0, 1, int(polygon_length(p) / step), endpoint=False)
     return np.column_stack(splev(u, tck))
 
 
 def seg_dist(pts: np.ndarray, poly: np.ndarray) -> np.ndarray:
-
-    dense = resample(poly, 2.0)
-    return cKDTree(dense).query(pts)[0]
+    # distance from each point to the closed polyline (sampled every 2 mm)
+    return cKDTree(resample(poly, 2.0)).query(pts)[0]
 
 
 def bridge_outer(inner: dict, clusters: list, grid: Grid, max_gap: float, min_cells: int = 30):
+    # rebuild the outer wall around the island: nearest wall cell per 1-degree sector
 
     ctr = grid.xy(np.argwhere(inner["filled"])).mean(0)
     cand = [c for c in clusters if c is not inner and c["cells"] >= min_cells]
@@ -178,19 +193,14 @@ def bridge_outer(inner: dict, clusters: list, grid: Grid, max_gap: float, min_ce
     ang, rad = np.arctan2(d[:, 1], d[:, 0]), np.hypot(d[:, 0], d[:, 1])
     nb = 360
     b = ((ang + np.pi) / (2 * np.pi) * nb).astype(int) % nb
-    r = np.full(nb, np.nan)
-
-    for k in range(nb):
-        rk = rad[b == k]
-        if len(rk):
-            r[k] = rk.min()
-
+    r = np.full(nb, np.inf)
+    np.minimum.at(r, b, rad)
+    r[np.isinf(r)] = np.nan
 
     for k in np.flatnonzero(~np.isnan(r)):
         nbr = r[[(k + j) % nb for j in range(-10, 11) if j]]
         if np.isfinite(nbr).sum() >= 4 and abs(r[k] - np.nanmedian(nbr)) > 400:
             r[k] = np.nan
-
 
     have = np.flatnonzero(~np.isnan(r))
 
@@ -201,7 +211,6 @@ def bridge_outer(inner: dict, clusters: list, grid: Grid, max_gap: float, min_ce
     poly = ctr + np.c_[np.cos(th), np.sin(th)] * rr[:, None]
     gaps, spans = [], []
 
-
     for i, j in zip(have, np.roll(have, -1)):
         if (j - i) % nb > 1:
             a, z = poly[i], poly[j]
@@ -210,39 +219,33 @@ def bridge_outer(inner: dict, clusters: list, grid: Grid, max_gap: float, min_ce
 
     if gaps and max(g_[0] for g_ in gaps) > max_gap:
         raise SystemExit(f"--bridge-gaps: largest gap {max(g_[0] for g_ in gaps):.0f} mm > {max_gap:.0f} mm")
-    
-   
+
     near = cKDTree(resample(poly, 10.0)).query(xy)[0] < 150
     real = np.zeros(inner["mask"].shape, bool)
     real[rc[near, 0], rc[near, 1]] = True
 
-   
     mask = real.copy().astype(np.uint8)
-    r_, c_ = grid.idx(poly)                     
+    r_, c_ = grid.idx(poly)
     cv2.polylines(mask, [np.c_[c_, r_].astype(np.int32)], True, 1, 2)
     for sp in spans:
         r_, c_ = grid.idx(sp)
         cv2.polylines(mask, [np.c_[c_, r_].astype(np.int32)], False, 1, 5)
-    ks = 2 * int(60 / grid.cell / 2) + 1
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks)))
-    cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    filled = np.zeros_like(mask)
-    cv2.drawContours(filled, cs, -1, 1, -1)
-    mask, filled = mask.astype(bool), filled.astype(bool)
-    return mask, filled, filled & ~mask, real, gaps
+    return (*closed_and_filled(mask, 60, grid.cell), real, gaps)
 
 
+# perimeter of a closed polygon
 def polygon_length(p):
     return float(np.sum(np.linalg.norm(np.diff(np.vstack([p, p[:1]]), axis=0), axis=1)))
 
 
+# shoelace formula
 def polygon_area(p):
     x, y = p[:, 0], p[:, 1]
     return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
 
 
+# minimal DXF (R12): one closed POLYLINE per loop, in mm
 def write_dxf(path: Path, polys: dict[str, np.ndarray]):
-
     L = ["0", "SECTION", "2", "HEADER", "9", "$INSUNITS", "70", "4", "0", "ENDSEC",
          "0", "SECTION", "2", "ENTITIES"]
     for layer, p in polys.items():
@@ -254,6 +257,7 @@ def write_dxf(path: Path, polys: dict[str, np.ndarray]):
     path.write_text("\n".join(L) + "\n")
 
 
+# the walls as vertical strips from the floor to `height`, for CloudCompare
 def write_walls_ply(path: Path, polys: list[np.ndarray], height: float):
     V, F = [], []
     for p in polys:
@@ -271,7 +275,6 @@ def write_walls_ply(path: Path, polys: list[np.ndarray], height: float):
 
 
 def main() -> None:
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--dense", required=True)
     ap.add_argument("--sparse", required=True)
@@ -315,11 +318,8 @@ def main() -> None:
 
     # ---  band -------------------------------------------------------------------
     z = P[:, 2]
-    tall = z[(z > args.band_lo) & (z < 1000)]
-    hist, edges = np.histogram(tall, bins=np.arange(args.band_lo, 1000, 10))
-    
-    peak = hist.max()
-    top_i = np.flatnonzero(hist > 0.05 * peak).max()
+    hist, edges = np.histogram(z[(z > args.band_lo) & (z < 1000)], bins=np.arange(args.band_lo, 1000, 10))
+    top_i = np.flatnonzero(hist > 0.05 * hist.max()).max()      # highest bin with 5% of the peak
     wall_top = float(edges[top_i + 1])
     band_hi = wall_top + args.top_margin
     band = P[(z > args.band_lo) & (z < band_hi), :2]
@@ -340,14 +340,7 @@ def main() -> None:
         rc = occ[lab == L]
         mask = np.zeros(H.shape, bool)
         mask[rc[:, 0], rc[:, 1]] = True
-        ks = 2 * int(args.close_mm / args.cell / 2) + 1
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
-        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, k).astype(bool)
-        cs, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        filled = np.zeros_like(mask, np.uint8)
-        cv2.drawContours(filled, cs, -1, 1, -1)
-        filled = filled.astype(bool)
-        hole = filled & ~mask
+        mask, filled, hole = closed_and_filled(mask, args.close_mm, args.cell)
         clusters.append(dict(label=int(L), cells=len(rc), mask=mask, filled=filled, hole=hole,
                              area=filled.sum() * args.cell ** 2))
     clusters.sort(key=lambda c: -c["area"])
@@ -368,6 +361,7 @@ def main() -> None:
                          + ("" if args.bridge_gaps else " (try --bridge-gaps)"))
     else:
         outer = loops[0]
+        # the island: the loop that lies wholly inside the outer wall's hole
         inner = next((c for c in loops[1:] if (c["filled"] & outer["hole"]).sum() == c["filled"].sum()), None)
     if inner is None:
         raise SystemExit("no closed loop inside the outer wall")
@@ -387,7 +381,9 @@ def main() -> None:
             poly = snap_to_wall(poly, pts, tree, half_width=args.snap_width, reach=120.0)
         poly = smooth_closed(poly, 10.0, args.smooth)
         d = seg_dist(pts, poly)
+        d_in = d[d < 150]
         walls[name] = poly
+        # a vertex is measured when a wall point lies within 100 mm of it
         measured[name] = tree.query(poly)[0] <= 100.0
         seg = np.linalg.norm(np.roll(poly, -1, 0) - poly, axis=1)
         rep[name] = dict(
@@ -395,9 +391,9 @@ def main() -> None:
             interpolated_mm=float(seg[~measured[name]].sum()),
             interpolated_pct=float(100 * seg[~measured[name]].sum() / seg.sum()),
             points=int(len(pts)),
-            resid_rms_mm=float(np.sqrt(np.mean(d[d < 150] ** 2))),
-            resid_median_mm=float(np.median(d[d < 150])),
-            resid_p95_mm=float(np.percentile(d[d < 150], 95)),
+            resid_rms_mm=float(np.sqrt(np.mean(d_in ** 2))),
+            resid_median_mm=float(np.median(d_in)),
+            resid_p95_mm=float(np.percentile(d_in, 95)),
             outliers_gt150mm_pct=float(100 * (d >= 150).mean()),
             extent_mm=(poly.max(0) - poly.min(0)).round(0).tolist())
         print(f"{name:>5} wall: length {rep[name]['length_mm'] / 1000:.3f} m, "

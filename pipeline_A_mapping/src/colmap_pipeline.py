@@ -2,6 +2,17 @@ import argparse
 import subprocess
 from pathlib import Path
 
+
+def colmap(command: str, options: dict) -> None:
+    argv = ["colmap", command]
+    for k, v in options.items():
+        argv += [f"--{k}", str(v)]
+    subprocess.run(argv, check=True)
+
+
+# Sparse reconstruction: SIFT features, sequential (or exhaustive) matching, the
+# incremental mapper. Writes the database and sparse/0, sparse/1, ... (one per
+# connected component).
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", type=Path, required=True)
@@ -51,59 +62,33 @@ def main() -> None:
                     help="all frames come from one physical camera — share intrinsics")
     args = ap.parse_args()
     use_gpu = "1" if args.gpu else "0"
+    db = args.database or Path("colmap") / args.image.name / "database.db"
+    out = args.output or Path("colmap") / args.image.name / "sparse"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
 
-    video_name = args.image.name
-    if args.database is None:
-        args.database = Path("colmap") / video_name / "database.db"
-    if args.output is None:
-        args.output = Path("colmap") / video_name / "sparse"
-
-    args.database.parent.mkdir(parents=True, exist_ok=True)
-    args.output.mkdir(parents=True, exist_ok=True)
-
-    print("running feature_extractor...")
-    
-    cmd = [
-        "colmap", "feature_extractor",
-        "--database_path", str(args.database),
-        "--image_path", str(args.image),
-        "--SiftExtraction.use_gpu", use_gpu,
-        # 4K video frames blow up RAM: downscale for extraction (no quality
-        # loss that matters for SIFT) and bound the number of concurrent
-        # image buffers. Videos already smaller than 1600px are unaffected.
-        "--SiftExtraction.max_image_size", str(args.max_image_size),
-        "--SiftExtraction.num_threads", str(args.num_threads),
-    ]
+    # 4K video frames blow up RAM: downscale for extraction (no quality loss that
+    # matters for SIFT) and bound the number of concurrent image buffers
+    extract = {"database_path": db, "image_path": args.image, "SiftExtraction.use_gpu": use_gpu,
+               "SiftExtraction.max_image_size": args.max_image_size,
+               "SiftExtraction.num_threads": args.num_threads}
     if args.peak_threshold is not None:
-        cmd += ["--SiftExtraction.peak_threshold", str(args.peak_threshold)]
+        extract["SiftExtraction.peak_threshold"] = args.peak_threshold
     if args.camera_model:
-        cmd += ["--ImageReader.camera_model", args.camera_model]
+        extract["ImageReader.camera_model"] = args.camera_model
     if args.single_camera:
-        cmd += ["--ImageReader.single_camera", "1"]
-    subprocess.run(cmd, check=True)
+        extract["ImageReader.single_camera"] = 1
+    print("running feature_extractor...")
+    colmap("feature_extractor", extract)
 
     matcher = "exhaustive_matcher" if args.exhaustive else "sequential_matcher"
     print(f"running {matcher}...")
-
-    cmd = [
-        "colmap", matcher,
-        "--database_path", str(args.database),
-        "--SiftMatching.use_gpu", use_gpu,
-    ]
-    subprocess.run(cmd, check=True)
+    colmap(matcher, {"database_path": db, "SiftMatching.use_gpu": use_gpu})
 
     print("running mapper...")
-
-    cmd = [
-        "colmap", "mapper",
-        "--database_path", str(args.database),
-        "--image_path", str(args.image),
-        "--output_path", str(args.output),
-        "--Mapper.num_threads", str(args.num_threads),
-    ]
-    subprocess.run(cmd, check=True)
-
-    print(f"done — sparse model written under {args.output}/")
+    colmap("mapper", {"database_path": db, "image_path": args.image, "output_path": out,
+                      "Mapper.num_threads": args.num_threads})
+    print(f"done — sparse model written under {out}/")
 
 
 if __name__ == "__main__":

@@ -17,14 +17,9 @@ def run(cmd: list[str], memory_limit: str) -> None:
     memory ceiling, so it gets killed on its own if it exceeds memory_limit
     instead of triggering the system-wide OOM killer.
     """
-    scoped_cmd = [
-        "systemd-run", "--user", "--scope", "--quiet",
-        "-p", f"MemoryMax={memory_limit}",
-        "-p", "MemorySwapMax=0",
-        "--",
-    ] + cmd
     print("+", " ".join(cmd), f"(memory-capped at {memory_limit})")
-    subprocess.run(scoped_cmd, check=True)
+    subprocess.run(["systemd-run", "--user", "--scope", "--quiet",
+                    "-p", f"MemoryMax={memory_limit}", "-p", "MemorySwapMax=0", "--", *cmd], check=True)
 
 
 def run_openmvs(workspace: Path, tool: str, tool_args: list[str], memory_limit: str) -> None:
@@ -33,20 +28,16 @@ def run_openmvs(workspace: Path, tool: str, tool_args: list[str], memory_limit: 
     against it. Runs as the current host user so output files aren't root-owned,
     and under a hard --memory cap so it can't take down the whole system.
     """
-    cmd = [
-        "docker", "run", "--rm",
-        "--memory", memory_limit,
-        "--memory-swap", memory_limit,
-        "--user", f"{os.getuid()}:{os.getgid()}",
-        "-v", f"{workspace.resolve()}:/workspace",
-        "-w", "/workspace",
-        OPENMVS_IMAGE,
-        f"{OPENMVS_BIN}/{tool}",
-    ] + tool_args
+    cmd = ["docker", "run", "--rm", "--memory", memory_limit, "--memory-swap", memory_limit,
+           "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{workspace.resolve()}:/workspace",
+           "-w", "/workspace", OPENMVS_IMAGE, f"{OPENMVS_BIN}/{tool}", *tool_args]
     print("+", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
 
+# Dense cloud for a sparse model: undistort the images (COLMAP), convert the model to
+# text, then OpenMVS InterfaceCOLMAP and DensifyPointCloud in Docker. Writes
+# <workspace>/undistorted/scene_dense.ply.
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sparse", type=Path, required=True, help="COLMAP sparse model folder, e.g. colmap/sparse/0")
@@ -62,24 +53,16 @@ def main() -> None:
     undistorted.mkdir(parents=True, exist_ok=True)
 
     print("running image_undistorter...")
-    run([
-        "colmap", "image_undistorter",
-        "--image_path", str(args.images),
-        "--input_path", str(args.sparse),
-        "--output_path", str(undistorted),
-        "--output_type", "COLMAP",
-    ], args.memory_limit)
+    run(["colmap", "image_undistorter", "--image_path", str(args.images), "--input_path", str(args.sparse),
+         "--output_path", str(undistorted), "--output_type", "COLMAP"], args.memory_limit)
 
     print("converting undistorted sparse model to TXT...")
-    run([
-        "colmap", "model_converter",
-        "--input_path", str(undistorted / "sparse"),
-        "--output_path", str(undistorted / "sparse"),
-        "--output_type", "TXT",
-    ], args.memory_limit)
+    run(["colmap", "model_converter", "--input_path", str(undistorted / "sparse"),
+         "--output_path", str(undistorted / "sparse"), "--output_type", "TXT"], args.memory_limit)
 
     print("running InterfaceCOLMAP (OpenMVS, via Docker)...")
-    run_openmvs(undistorted, "InterfaceCOLMAP", ["-i", ".", "-o", "scene.mvs", "--image-folder", "images"], args.memory_limit)
+    run_openmvs(undistorted, "InterfaceCOLMAP", ["-i", ".", "-o", "scene.mvs", "--image-folder", "images"],
+                args.memory_limit)
 
     print("running DensifyPointCloud (OpenMVS, via Docker)...")
     run_openmvs(undistorted, "DensifyPointCloud", [

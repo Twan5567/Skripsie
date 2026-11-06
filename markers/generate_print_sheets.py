@@ -9,7 +9,6 @@ import os
 
 import cv2
 import matplotlib
-import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -87,15 +86,15 @@ def draw_scale_check(ax, x: float, y: float, length: float = 100.0):
             fontsize=7, va="baseline", ha="left")
 
 
-def draw_corner_ticks(ax, x: float, y: float, side: float, gap: float, arm: float):
-    """Registration ticks aligned with the marker edges, kept `gap` mm clear of
-    the black square so the white quiet zone stays unbroken."""
-    for cx in (x, x + side):
+def draw_corner_ticks(ax, x: float, y: float, w: float, h: float, gap: float, arm: float):
+    """Registration ticks aligned with the edges of a w x h box, kept `gap` mm clear
+    of it so the white quiet zone stays unbroken."""
+    for cx in (x, x + w):
         ax.plot([cx, cx], [y - gap - arm, y - gap], color="black", lw=0.5)
-        ax.plot([cx, cx], [y + side + gap, y + side + gap + arm], color="black", lw=0.5)
-    for cy in (y, y + side):
+        ax.plot([cx, cx], [y + h + gap, y + h + gap + arm], color="black", lw=0.5)
+    for cy in (y, y + h):
         ax.plot([x - gap - arm, x - gap], [cy, cy], color="black", lw=0.5)
-        ax.plot([x + side + gap, x + side + gap + arm], [cy, cy], color="black", lw=0.5)
+        ax.plot([x + w + gap, x + w + gap + arm], [cy, cy], color="black", lw=0.5)
 
 
 def _text_mm(label: str, fontsize: float) -> float:
@@ -141,7 +140,7 @@ def marker_sheet(paper: str, dict_obj, dict_name: str, marker_id: int, side: flo
 
     fig, ax = new_page(w, h)
     draw_marker(ax, dict_obj, dict_name, marker_id, x, y, side)
-    draw_corner_ticks(ax, x, y, side, gap=quiet + 3.0, arm=6.0)
+    draw_corner_ticks(ax, x, y, side, side, gap=quiet + 3.0, arm=6.0)
     if role.startswith("VEHICLE TAG"):
         # Cut line sits exactly one module outside the black square, so the
         # trimmed tag keeps its full quiet zone. FRONT sits above that line.
@@ -244,24 +243,33 @@ CHARUCO = {
 }
 
 
-def charuco_sheet(paper: str):
-    (sx, sy), sq, mk = CHARUCO[paper]
-    ph, pw = PAPER_MM[paper]  # landscape: swap
-    board = cv2.aruco.CharucoBoard((sx, sy), sq, mk, CHARUCO_DICT)
+def charuco_size(paper: str) -> tuple[float, float]:
+    (sx, sy), sq, _ = CHARUCO[paper]
+    return sx * sq, sy * sq
 
+
+def draw_charuco(ax, paper: str, x0: float, y0: float) -> None:
+    (sx, sy), sq, mk = CHARUCO[paper]
+    board = cv2.aruco.CharucoBoard((sx, sy), sq, mk, CHARUCO_DICT)
     # Integer pixels per square => every edge lands exactly on a pixel boundary,
     # so the board stays crisp regardless of the resampling the printer does.
     px = 480
     img = board.generateImage((sx * px, sy * px), 0, 1)
+    bw, bh = charuco_size(paper)
+    ax.imshow(img, cmap="gray", vmin=0, vmax=255, extent=(x0, x0 + bw, y0 + bh, y0),
+              interpolation="nearest", zorder=1)
 
-    bw, bh = sx * sq, sy * sq
+
+def charuco_sheet(paper: str):
+    (sx, sy), sq, mk = CHARUCO[paper]
+    ph, pw = PAPER_MM[paper]  # landscape: swap
+    bw, bh = charuco_size(paper)
     x0, y0 = (pw - bw) / 2.0, 12.0
     if x0 < 8.0 or y0 + bh > ph - 72.0:
         raise ValueError(f"ChArUco {paper} board does not fit the page")
 
     fig, ax = new_page(pw, ph)
-    ax.imshow(img, cmap="gray", vmin=0, vmax=255, extent=(x0, x0 + bw, y0 + bh, y0),
-              interpolation="nearest", zorder=1)
+    draw_charuco(ax, paper, x0, y0)
 
     ty = y0 + bh + 12.0
     ax.text(pw / 2.0, ty, "ChArUco CALIBRATION BOARD", fontsize=16, weight="bold",
